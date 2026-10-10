@@ -1,0 +1,8 @@
+# OS and editor noise
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Generated while building the PDF
+portfolio/build/portfolio.html
+portfolio/build/align-report.json

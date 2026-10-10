@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "portfolio-preview", "runtimeExecutable": "node", "runtimeArgs": ["portfolio/build/serve.js", "4174"], "port": 4174 }
+  ]
+}

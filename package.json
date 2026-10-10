@@ -1,0 +1,12 @@
+{
+  "name": "kritan-duwal-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Portfolio site, portfolio PDF and career bank, all generated from portfolio/data.js",
+  "scripts": {
+    "start": "node portfolio/build/serve.js",
+    "build": "node portfolio/build/build.js",
+    "audio": "node portfolio/build/make-audio.js",
+    "check-align": "node portfolio/build/check-align.js"
+  }
+}

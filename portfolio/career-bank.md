@@ -308,13 +308,14 @@ Tags in brackets are the target roles each bullet suits. `extra` = not on the cu
 
 - Area: DSP & plugins | Period: 2026 | On current resume: yes
 - Role: Developer
-- Summary: A C++17 / JUCE port of the three panning laws from the AES paper, built as VST3, AU and Standalone. Try the three laws in the live demo.
+- Summary: A C++17 / JUCE port of the three panning laws from the AES paper, built as VST3, AU and Standalone, plus an offline mixer app that renders the same sources as ICLD, ICTD and hybrid mixes for comparison.
 - ICLD is a constant-power level pan; ICTD delays the far channel by a sub-sample amount; HYBD combines them, across the whole band or split at a crossover (time below, level above).
 - Streaming third-order Lagrange fractional delay on a ring buffer. The offline MATLAB reads one sample ahead, so the plugin runs a constant one-sample latency and reports it to the host for delay compensation.
 - Second-order Butterworth crossover (juce::dsp::IIR) with both bands always computed, so mode switches are click-free.
 - Parameters through APVTS with 20 ms smoothing. Panning math and interpolator verified numerically against the MATLAB reference.
+- Hybrid Pan Mixer, a second build target: sources placed left, center and right are rendered as three mixes, matched to the same integrated loudness (BS.1770) for blind A/B/C listening, with goniometer, coherence and inter-channel phase plots. The portfolio site runs a JavaScript port of its renderer.
 - Stack: C++17, JUCE, CMake, VST3 / AU, Fractional delay, IIR filters, MATLAB
-- Link: GitHub - https://github.com/kritanduwal
+- Link: GitHub - https://github.com/kritanduwal/HybirdPan
 - Evidence on disk:
   - `C:\Users\dkrit\OneDrive - Belmont University\Yamaha DSP Internship Portfolio\01 JUCE Plugins (C++)\Hybrid Pan (VST3)`
   - `C:\Users\dkrit\OneDrive - Belmont University\Yamaha DSP Internship Portfolio\01 JUCE Plugins (C++)\Hybrid Pan (VST3)\README.md`

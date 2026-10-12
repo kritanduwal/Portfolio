@@ -1,6 +1,7 @@
 // Cuts 16-bit WAV excerpts for the portfolio site and writes site/audio-meta.js
 // (duration, RMS level and waveform peaks per clip). No dependencies.
-//   node build/make-audio.js
+//   node build/make-audio.js            cuts every clip
+//   node build/make-audio.js mix_       cuts only the clips whose id starts with mix_ and keeps the rest of audio-meta.js
 const fs = require('fs');
 const path = require('path');
 
@@ -29,7 +30,7 @@ function find(dir, ...res) {
   return hits[0];
 }
 
-// [id, source, start seconds, duration seconds]
+// [id, source, start seconds, duration seconds, optional { mono, gain }]
 const CLIPS = [
   ['samba_master', OD + '/AES Student Recording Submission/Duwal_FJQ_SambaFunk_44k16b_MASTER.wav', 20, 90],
 
@@ -86,6 +87,11 @@ const CLIPS = [
   ['wt_50', DSP + '/Synthesis/wavetable50Hz.wav', 0, 3],
   ['wt_100', DSP + '/Synthesis/wavetable100Hz.wav', 0, 3],
   ['wt_200', DSP + '/Synthesis/wavetable200Hz.wav', 0, 3],
+
+// ---- stems for the Hybrid Pan mixer on the DSP page: one shared 12 s window of the "Upper Hand" multitrack.
+// The fifth entry sums a clip to mono and applies a gain in dB, so the stems arrive roughly balanced (the mixer has no faders).
+  ...[['gtr', '15_AcousticGtr1', 8], ['bass', '14_Bass', 0], ['vox', '23_LeadVox', 6], ['drums', '11_DrumsRoom2_Mono', 11], ['rhodes', '19_Rhodes', 2]].map(([id, name, gain]) =>
+    ['mix_' + id, PT + '/Upper Hand - Volume Balance/Audio Files/' + name + '.wav', 96, 12, { mono: true, gain }]),
 ];
 
 // Seconds added to a clip's start so every version in an A/B set lines up with the others.
@@ -136,7 +142,7 @@ function sampleReader(fmt) {
   throw new Error('unsupported format tag ' + tag + ' / ' + bits + ' bit');
 }
 
-function cut([id, src, start, dur]) {
+function cut([id, src, start, dur, opt = {}]) {
   start += OFFSETS[id] || 0;
   const fd = fs.openSync(src, 'r');
   const { fmt, data } = readHeader(fd);
@@ -149,7 +155,7 @@ function cut([id, src, start, dur]) {
   fs.closeSync(fd);
 
   const read = sampleReader(fmt);
-  const outCh = Math.min(fmt.ch, 2);
+  const outCh = opt.mono ? 1 : Math.min(fmt.ch, 2), srcCh = Math.min(fmt.ch, 2), lin = Math.pow(10, (opt.gain || 0) / 20);
   const out = Buffer.alloc(44 + n * outCh * 2);
   const fadeIn = Math.floor(0.01 * fmt.sr), fadeOut = Math.floor(0.4 * fmt.sr);
   const BINS = 240, peaks = new Array(BINS).fill(0);
@@ -159,7 +165,9 @@ function cut([id, src, start, dur]) {
     if (first > 0 && i < fadeIn) g = i / fadeIn;
     if (first + n < total && i > n - fadeOut) g = Math.min(g, (n - i) / fadeOut);
     for (let c = 0; c < outCh; c++) {
-      const v = read(raw, i * frame + c * bps) * g;
+      let v = read(raw, i * frame + c * bps);
+      if (opt.mono && srcCh === 2) v = 0.5 * (v + read(raw, i * frame + bps));
+      v *= g * lin;
       sumSq += v * v;
       const a = Math.abs(v), bin = Math.floor(i * BINS / n);
       if (a > peaks[bin]) peaks[bin] = a;
@@ -181,8 +189,10 @@ function cut([id, src, start, dur]) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-const meta = {};
-for (const clip of CLIPS) {
+const only = process.argv[2], metaFile = path.join(OUT, '..', 'audio-meta.js');
+const meta = only ? JSON.parse(fs.readFileSync(metaFile, 'utf8').replace(/^window\.AUDIO_META = /, '').replace(/;\s*$/, '')) : {};
+for (const id of Object.keys(meta)) if (id.startsWith(only)) delete meta[id]; // drop entries for clips that no longer exist
+for (const clip of CLIPS.filter(c => !only || c[0].startsWith(only))) {
   try {
     meta[clip[0]] = cut(clip);
     const m = meta[clip[0]];
@@ -191,4 +201,4 @@ for (const clip of CLIPS) {
     console.log('FAILED', clip[0], e.message);
   }
 }
-fs.writeFileSync(path.join(OUT, '..', 'audio-meta.js'), 'window.AUDIO_META = ' + JSON.stringify(meta) + ';\n');
+fs.writeFileSync(metaFile, 'window.AUDIO_META = ' + JSON.stringify(meta) + ';\n');

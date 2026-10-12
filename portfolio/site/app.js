@@ -1,5 +1,5 @@
 /* Portfolio site. Each HTML page is a shell with <main data-page="...">; this file renders it from data.js.
-   Includes the synced A/B audio player and the live panning demo. */
+   Includes the synced A/B audio player and the Hybrid Pan mixer. */
 (function () {
   const D = window.PORTFOLIO, META = window.AUDIO_META || {};
   const $ = (s, r = document) => r.querySelector(s);
@@ -30,15 +30,16 @@
   class Player {
     constructor(set) {
       this.set = set;
-      this.clips = set.clips.filter(c => META[c.id]);
+      this.clips = set.clips.filter(c => c.meta || META[c.id]); // a clip rendered in the page carries its own meta and buffer
       this.active = set.start != null ? set.start : (this.clips.length > 1 ? 1 : 0); // open on the processed version
       this.audios = null;
       this.playing = false;
       this.match = set.match !== false; // level-matched unless the set opts out
+      this.rendered = this.clips.length > 0 && this.clips.every(c => c.buffer);
       this.build();
       players.push(this);
     }
-    get meta() { return META[this.clips[this.active].id]; }
+    get meta() { const c = this.clips[this.active]; return c.meta || META[c.id]; }
     build() {
       this.btn = el('button', { class: 'play', 'aria-label': 'Play ' + this.set.title, html: ICON.play, onclick: () => this.toggle() });
       this.time = el('span', { class: 'p-time' }, '0:00 / ' + fmt(this.meta.dur));
@@ -58,7 +59,7 @@
         const box = el('input', { type: 'checkbox', onchange: e => { this.match = e.target.checked; this.applyGains(); } });
         box.checked = this.match;
         this.root.append(el('div', { class: 'ab', role: 'group', 'aria-label': 'Version' }, this.tabs,
-          el('label', { class: 'match', title: 'Plays every version at the same RMS level' }, box, 'Level-match')));
+          this.set.matched ? el('span', { class: 'match' }, this.set.matched) : el('label', { class: 'match', title: 'Plays every version at the same RMS level' }, box, 'Level-match')));
         this.root.addEventListener('keydown', e => {
           const i = parseInt(e.key, 10) - 1;
           if (i >= 0 && i < this.clips.length) this.select(i);
@@ -79,16 +80,19 @@
     async load() {
       if (this.ready) return;
       if (!this.loading) this.loading = (async () => {
-        if (USE_WEB_AUDIO) {
+        if (this.rendered) this.buffers = this.clips.map(c => c.buffer);
+        else if (USE_WEB_AUDIO) {
           try {
             const ctx = audioContext();
             this.buffers = await Promise.all(this.clips.map(c =>
               fetch(this.url(c)).then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b))));
-            this.nodes = this.clips.map(() => { const g = ctx.createGain(); g.gain.value = 0; g.connect(ctx.destination); return g; });
-            this.offset = 0;
           } catch (e) { this.buffers = null; }
         }
-        if (!this.buffers) {
+        if (this.buffers) {
+          const ctx = audioContext();
+          this.nodes = this.clips.map(() => { const g = ctx.createGain(); g.gain.value = 0; g.connect(ctx.destination); return g; });
+          this.offset = 0;
+        } else {
           this.audios = this.clips.map(c => { const a = new Audio(this.url(c)); a.preload = 'auto'; return a; });
           this.audios[0].addEventListener('ended', () => this.stop(true));
         }
@@ -145,8 +149,7 @@
     toggle() { this.playing ? this.stop(false) : this.play(); }
     async play() {
       players.forEach(p => p !== this && p.playing && p.stop(false));
-      if (window.PanDemo) window.PanDemo.stop();
-      if (USE_WEB_AUDIO) audioContext().resume(); // must happen inside the click
+      if (USE_WEB_AUDIO || this.rendered) audioContext().resume(); // must happen inside the click
       this.playing = true;
       this.btn.innerHTML = ICON.pause;
       this.root.classList.add('is-playing');
@@ -215,66 +218,192 @@
   // An audio list entry is either a set of clips or { heading } to label the sets that follow.
   const playerFor = set => set.heading ? el('h3', { class: 'audio-head' }, set.heading) : new Player(set).root;
 
-  // ---------------------------------------------------------------- hybrid pan demo
-  // A browser sketch of the plugin's three panning laws. The plugin uses a Lagrange-3 fractional delay;
-  // here a Web Audio DelayNode stands in for it.
-  function panDemo() {
-    let ctx, src, gL, gR, dL, dR, buffer, playing = false;
-    const state = { mode: 'HYBD', pan: 0.5, max: 0.3 };
-    const btn = el('button', { class: 'play', 'aria-label': 'Play panning demo', html: ICON.play, onclick: toggle });
-    const modes = ['ICLD', 'ICTD', 'HYBD'].map(m => el('button', { 'aria-pressed': String(m === state.mode), onclick: () => { state.mode = m; sync(); } }, m));
-    const panOut = el('output'), maxOut = el('output'), lvl = el('b'), tim = el('b');
-    const pan = el('input', { type: 'range', min: '-1', max: '1', step: '0.01', value: String(state.pan), id: 'pan', oninput: e => { state.pan = +e.target.value; sync(); } });
-    const max = el('input', { type: 'range', min: '0', max: '2', step: '0.05', value: String(state.max), id: 'maxictd', oninput: e => { state.max = +e.target.value; sync(); } });
-    const root = el('div', { class: 'demo' },
-      el('div', { class: 'p-head' }, btn, el('div', {}, el('h4', {}, 'Live demo: three ways to pan'),
-        el('p', {}, 'Level only, time only, or both. Listen for how the image and its depth change. Headphones or well-placed speakers.'))),
-      el('div', { class: 'ab', role: 'group', 'aria-label': 'Panning law' }, modes),
-      el('div', { class: 'row' }, el('label', { for: 'pan' }, 'Pan'), pan, panOut),
-      el('div', { class: 'row' }, el('label', { for: 'maxictd' }, 'Max ICTD'), max, maxOut),
-      el('div', { class: 'readout' }, el('div', {}, 'Level difference', lvl), el('div', {}, 'Time difference', tim)));
+  // ---------------------------------------------------------------- hybrid pan mixer
+  // The Hybrid Pan Mixer app, in the browser. Sources at the left, center and right positions are rendered as ICLD,
+  // ICTD and HYBD mixes by hybrid-pan-mix.js (a port of the app's renderer) and played back through the A/B player.
+  // Not ported: the coherence, phase and spectrum plots. Files are decoded at the audio context's sample rate.
+  function panMixer(cfg) {
+    const MAX_SECONDS = 60; // per file; the render runs on the main thread
+    const state = { mode: 'freqsplit', crossover: 700, maxICTD: 0.3 };
+    const positions = [['LEFT', -1], ['CENTER', 0], ['RIGHT', 1]].map(([name, pan]) => ({ name, pan,
+      tracks: cfg.stems.filter(s => s.pos === name && META[s.id]).map(s => ({ label: s.label, url: 'audio/' + s.id + '.wav' })) }));
+    let player, urls = [];
 
-    function law() {
-      const p = state.pan, useL = state.mode !== 'ICTD', useT = state.mode !== 'ICLD';
-      const theta = (p + 1) * Math.PI / 4;
-      const l = useL ? Math.cos(theta) : Math.SQRT1_2, r = useL ? Math.sin(theta) : Math.SQRT1_2;
-      const dt = useT ? Math.abs(p) * state.max / 1000 : 0; // seconds, applied to the far channel
-      return { l, r, delayL: p > 0 ? dt : 0, delayR: p < 0 ? dt : 0, dt };
-    }
+    const status = el('p', { class: 'mx-status', role: 'status' });
+    const say = t => { status.textContent = t; };
+    const results = el('div', { class: 'mx-results' });
+    const renderBtn = el('button', { class: 'btn primary', onclick: render }, 'Render mixes');
+    const modes = [['freqsplit', 'Freqsplit'], ['broadband', 'Broadband']].map(([id, label]) =>
+      el('button', { 'aria-pressed': String(id === state.mode), onclick: () => { state.mode = id; sync(); } }, label));
+    const xOut = el('output'), maxOut = el('output');
+    const xover = el('input', { type: 'range', min: '100', max: '2000', step: '10', value: String(state.crossover), id: 'mx-xover', oninput: e => { state.crossover = +e.target.value; sync(); } });
+    const max = el('input', { type: 'range', min: '0.01', max: '2', step: '0.01', value: String(state.maxICTD), id: 'mx-maxictd', oninput: e => { state.maxICTD = +e.target.value; sync(); } });
+    const panText = p => p === 0 ? 'C' : Math.round(Math.abs(p) * 100) + (p < 0 ? ' L' : ' R');
+
+    positions.forEach(p => {
+      const id = 'mx-pan-' + p.name.toLowerCase();
+      p.list = el('ul', { class: 'mx-files' });
+      p.out = el('output');
+      const input = el('input', { type: 'file', accept: 'audio/*', multiple: '', hidden: '', onchange: async e => { const files = [...e.target.files]; e.target.value = ''; await addFiles(p, files); } });
+      p.root = el('div', { class: 'mx-pos' },
+        el('div', { class: 'mx-pos-head' }, el('b', {}, p.name),
+          el('button', { class: 'mx-btn', onclick: () => input.click() }, 'Add files'),
+          el('button', { class: 'mx-btn', onclick: () => { p.tracks = []; sync(); } }, 'Clear'), input),
+        el('div', { class: 'row' }, el('label', { for: id }, 'Pan'),
+          el('input', { type: 'range', min: '-1', max: '1', step: '0.01', value: String(p.pan), id, oninput: e => { p.pan = +e.target.value; sync(); } }), p.out),
+        p.list);
+    });
+
+    const root = el('div', { class: 'demo mixer' },
+      el('h4', {}, 'Hybrid Pan Mixer, in your browser'),
+      el('p', {}, 'The same sources rendered three ways: level differences only (ICLD), time differences only (ICTD), and the hybrid. The stems below are loaded for you, or add your own files. Headphones or well-placed speakers.'),
+      positions.map(p => p.root),
+      el('div', { class: 'ab', role: 'group', 'aria-label': 'HYBD mode' }, el('span', { class: 'mx-cap' }, 'HYBD mode'), modes),
+      el('div', { class: 'row' }, el('label', { for: 'mx-xover' }, 'Crossover'), xover, xOut),
+      el('div', { class: 'row' }, el('label', { for: 'mx-maxictd' }, 'Max ICTD'), max, maxOut),
+      el('div', { class: 'mx-go' }, renderBtn, status),
+      results,
+      cfg.credit ? credit(cfg.credit) : null);
+
     function sync() {
-      modes.forEach(b => b.setAttribute('aria-pressed', String(b.textContent === state.mode)));
-      const k = law();
-      panOut.textContent = state.pan === 0 ? 'C' : Math.round(Math.abs(state.pan) * 100) + (state.pan < 0 ? ' L' : ' R');
-      maxOut.textContent = state.max.toFixed(2) + ' ms';
-      const db = 20 * Math.log10(Math.max(k.r, 1e-4) / Math.max(k.l, 1e-4));
-      lvl.textContent = Math.abs(db) > 60 ? (db > 0 ? '+∞ dB' : '-∞ dB') : (db >= 0 ? '+' : '') + db.toFixed(1) + ' dB';
-      tim.textContent = (k.dt * 1000).toFixed(2) + ' ms';
-      if (!ctx) return;
-      const t = ctx.currentTime;
-      gL.gain.setTargetAtTime(k.l, t, 0.02); gR.gain.setTargetAtTime(k.r, t, 0.02);
-      dL.delayTime.setTargetAtTime(k.delayL, t, 0.02); dR.delayTime.setTargetAtTime(k.delayR, t, 0.02);
+      modes.forEach((b, i) => b.setAttribute('aria-pressed', String((i === 0) === (state.mode === 'freqsplit'))));
+      xover.disabled = state.mode !== 'freqsplit';
+      xOut.textContent = state.mode === 'freqsplit' ? state.crossover + ' Hz' : 'n/a';
+      maxOut.textContent = state.maxICTD.toFixed(2) + ' ms';
+      positions.forEach(p => {
+        p.out.textContent = panText(p.pan);
+        p.list.replaceChildren(...(p.tracks.length ? p.tracks.map(t => el('li', {}, t.label)) : [el('li', { class: 'none' }, 'No files')]));
+      });
     }
-    async function start() {
-      players.forEach(p => p.playing && p.stop(false));
-      if (!ctx) {
-        ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const bin = atob(window.DEMO_CLIP), bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        buffer = await ctx.decodeAudioData(bytes.buffer);
-        gL = ctx.createGain(); gR = ctx.createGain();
-        dL = ctx.createDelay(0.01); dR = ctx.createDelay(0.01);
-        const merge = ctx.createChannelMerger(2);
-        gL.connect(dL).connect(merge, 0, 0); gR.connect(dR).connect(merge, 0, 1);
-        merge.connect(ctx.destination);
+
+    // Each position takes mono sources, so stereo files are summed to mono, as in the app.
+    function toMono(b) {
+      const n = Math.min(b.length, Math.round(MAX_SECONDS * b.sampleRate)), x = new Float64Array(n), l = b.getChannelData(0);
+      if (b.numberOfChannels === 1) x.set(l.subarray(0, n));
+      else { const r = b.getChannelData(1); for (let i = 0; i < n; i++) x[i] = 0.5 * (l[i] + r[i]); }
+      return x;
+    }
+    async function addFiles(p, files) {
+      const skipped = [];
+      for (const f of files) {
+        try {
+          const b = await audioContext().decodeAudioData(await f.arrayBuffer());
+          if (b.numberOfChannels > 2) throw new Error('only mono and stereo files are supported');
+          p.tracks.push({ label: f.name + (b.duration > MAX_SECONDS ? ' (first ' + MAX_SECONDS + ' s)' : ''), data: toMono(b) });
+        } catch (e) { skipped.push(f.name); }
       }
-      await ctx.resume();
-      src = ctx.createBufferSource(); src.buffer = buffer; src.loop = true;
-      src.connect(gL); src.connect(gR); src.start();
-      playing = true; btn.innerHTML = ICON.pause; sync();
+      say(skipped.length ? 'Could not read ' + skipped.join(', ') + '.' : '');
+      sync();
     }
-    function stop() { if (!playing) return; src.stop(); playing = false; btn.innerHTML = ICON.play; }
-    function toggle() { playing ? stop() : start(); }
-    window.PanDemo = { stop };
+
+    async function render() {
+      const all = positions.flatMap(p => p.tracks.map(t => ({ t, p })));
+      if (!all.length) return say('Add at least one audio file first.');
+      const ctx = audioContext();
+      renderBtn.disabled = true;
+      try {
+        say('Loading audio…');
+        await Promise.all(all.map(async ({ t }) => {
+          if (t.data) return;
+          const res = await fetch(t.url);
+          if (!res.ok) throw new Error(t.url);
+          t.data = toMono(await ctx.decodeAudioData(await res.arrayBuffer()));
+        }));
+      } catch (e) {
+        renderBtn.disabled = false;
+        return say(USE_WEB_AUDIO ? 'Could not load the stems.' : 'The built-in stems only load when the site is served over http. Clear them and add your own files, or run npm start.');
+      }
+      say('Rendering…');
+      await new Promise(r => setTimeout(r, 30)); // let the status paint before the main thread is busy
+      const fs = ctx.sampleRate, t0 = performance.now();
+      const r = window.HybridPanMix.render(all.map(a => a.t.data), all.map(a => a.p.pan), fs,
+        { mode: state.mode, crossoverHz: state.crossover, maxICTDms: state.maxICTD });
+      show(r, all, fs);
+      renderBtn.disabled = false;
+      say('Rendered ' + all.length + ' track' + (all.length > 1 ? 's' : '') + ' at ' + fs + ' Hz in ' + Math.round(performance.now() - t0) + ' ms.');
+    }
+
+    // 24-bit stereo WAV, the format the app writes.
+    function wav(m, fs) {
+      const n = m.left.length, v = new DataView(new ArrayBuffer(44 + n * 6));
+      const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + n * 6, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+      v.setUint32(24, fs, true); v.setUint32(28, fs * 6, true); v.setUint16(32, 6, true); v.setUint16(34, 24, true); str(36, 'data'); v.setUint32(40, n * 6, true);
+      for (let i = 0, o = 44; i < n; i++) for (const ch of [m.left, m.right]) {
+        const s = Math.max(-8388608, Math.min(8388607, Math.round(ch[i] * 8388607)));
+        v.setUint8(o++, s & 255); v.setUint8(o++, (s >> 8) & 255); v.setUint8(o++, (s >> 16) & 255);
+      }
+      return new Blob([v.buffer], { type: 'audio/wav' });
+    }
+
+    // Goniometer over the half second around the loudest 50 ms of the HYBD mix, rotated so mono points up.
+    function goniometers(mixes, fs) {
+      const H = mixes[2].mix, N = H.left.length, win = Math.min(N, Math.round(0.05 * fs)), seg = Math.min(N, Math.round(0.5 * fs));
+      let sum = 0, best = -1, end = win;
+      for (let i = 0; i < N; i++) {
+        sum += H.left[i] * H.left[i] + H.right[i] * H.right[i];
+        if (i >= win) sum -= H.left[i - win] * H.left[i - win] + H.right[i - win] * H.right[i - win];
+        if (i >= win - 1 && sum > best) { best = sum; end = i; }
+      }
+      const start = Math.max(0, Math.min(N - seg, end - (seg >> 1)));
+      const cells = mixes.map(({ label, mix }) => {
+        const canvas = el('canvas', { role: 'img', 'aria-label': 'Goniometer of the ' + label + ' mix' });
+        return { canvas, mix, root: el('figure', {}, canvas, el('figcaption', {}, label)) };
+      });
+      const draw = () => cells.forEach(({ canvas, mix }) => {
+        const w = canvas.clientWidth, dpr = window.devicePixelRatio || 1;
+        if (!w) return;
+        canvas.width = canvas.height = Math.round(w * dpr);
+        const g = canvas.getContext('2d'), step = Math.max(1, Math.floor(seg / 6000));
+        let lim = 0;
+        for (let i = start; i < start + seg; i++) lim = Math.max(lim, Math.abs(mix.left[i]), Math.abs(mix.right[i]));
+        lim = lim * 1.1 || 1;
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.clearRect(0, 0, w, w);
+        g.strokeStyle = css('--line');
+        g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, w); g.moveTo(0, w / 2); g.lineTo(w, w / 2); g.stroke();
+        g.fillStyle = css('--accent');
+        g.globalAlpha = 0.55;
+        for (let i = start; i < start + seg; i += step) {
+          const l = mix.left[i], r = mix.right[i];
+          g.fillRect(w / 2 + (l - r) * Math.SQRT1_2 / lim * w / 2 - 0.5, w / 2 - (l + r) * Math.SQRT1_2 / lim * w / 2 - 0.5, 1.2, 1.2);
+        }
+        g.globalAlpha = 1;
+      });
+      const box = el('div', { class: 'mx-gonio' }, cells.map(c => c.root));
+      new ResizeObserver(draw).observe(box);
+      return el('div', { class: 'tablewrap' }, el('h3', {}, 'Goniometers (side across, mid up)'), box);
+    }
+
+    function show(r, all, fs) {
+      const ctx = audioContext(), info = r.info, active = player ? player.active : 2;
+      if (player) {
+        player.stop(false);
+        (player.nodes || []).forEach(n => n.disconnect());
+        players.splice(players.indexOf(player), 1);
+      }
+      urls.forEach(u => URL.revokeObjectURL(u));
+      const mixes = [['ICLD', r.icld], ['ICTD', r.ictd], ['HYBD', r.hybd]].map(([label, mix]) => ({ label, mix }));
+      const clips = mixes.map(({ label, mix }) => {
+        const n = mix.left.length, buffer = ctx.createBuffer(2, n, fs), peaks = new Array(240).fill(0);
+        buffer.copyToChannel(Float32Array.from(mix.left), 0);
+        buffer.copyToChannel(Float32Array.from(mix.right), 1);
+        for (let i = 0; i < n; i++) { const b = Math.floor(i * 240 / n), a = Math.max(Math.abs(mix.left[i]), Math.abs(mix.right[i])); if (a > peaks[b]) peaks[b] = a; }
+        return { id: label, label, buffer, meta: { dur: n / fs, peaks: peaks.map(p => Math.round(p * 100)) } };
+      });
+      player = new Player({ title: 'Rendered mixes', start: active, match: false, matched: 'LUFS-matched', clips,
+        note: (info.mode === 'freqsplit' ? 'HYBD: time difference below ' + info.crossoverHz + ' Hz, level difference above.' : 'HYBD: level and time difference across the whole band.')
+          + ' All three at ' + info.lufsTarget.toFixed(1) + ' LUFS.' });
+      urls = mixes.map(m => URL.createObjectURL(wav(m.mix, fs)));
+      const db = v => Math.abs(v) > 120 ? (v > 0 ? '+∞' : '-∞') : (v > 0 ? '+' : '') + v.toFixed(1);
+      results.replaceChildren(player.root,
+        el('div', { class: 'links' }, mixes.map((m, i) => el('a', { class: 'btn', href: urls[i], download: 'output_' + m.label + '.wav' }, m.label + ' .wav'))),
+        el('div', { class: 'tablewrap' }, el('h3', {}, 'Per-track parameters'), el('table', {},
+          el('thead', {}, el('tr', {}, ['Track', 'Pan', 'ICLD (dB)', 'ICTD (ms)'].map(h => el('th', {}, h)))),
+          el('tbody', {}, all.map((a, k) => { const t = info.perTrack[k]; return el('tr', {}, [a.t.label, panText(t.pan), db(t.icldDb), (t.ictdMs > 0 ? '+' : '') + t.ictdMs.toFixed(3)].map(c => el('td', {}, c))); })))),
+        goniometers(mixes, fs));
+    }
+
     sync();
     return root;
   }
@@ -311,7 +440,7 @@
         el('thead', {}, el('tr', {}, p.table.head.map(h => el('th', {}, h)))),
         el('tbody', {}, p.table.rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))))) : null);
     const media = el('div', { class: 'media' },
-      p.demo === 'hybrid-pan' ? panDemo() : null,
+      p.mixer && window.HybridPanMix ? panMixer(p.mixer) : null,
       (p.audio || []).map(playerFor),
       p.credit ? credit(p.credit) : null,
       imgs.slice(0, 1).map(figure),
@@ -364,7 +493,7 @@
         { id: 'recordings', title: 'Recordings and mixes', projects: ['samba-funk', 'studio-ops'] },
         { id: 'mastering', title: 'Mastering', projects: ['mastering'] },
         { id: 'mixing', title: 'Mixing coursework: technique studies', projects: ['mix-techniques'] },
-        { id: 'dsp', title: 'DSP I wrote', projects: ['matlab-dsp'], extra: el('p', { class: 'sub' }, 'There is also a ', el('a', { href: 'dsp.html#hybrid-pan' }, 'live panning demo'), ' of my Hybrid Pan plugin on the DSP page.') },
+        { id: 'dsp', title: 'DSP I wrote', projects: ['matlab-dsp'], extra: el('p', { class: 'sub' }, 'You can also render level, time and hybrid panned mixes yourself in the ', el('a', { href: 'dsp.html#hybrid-pan' }, 'Hybrid Pan mixer'), ' on the DSP page.') },
         { id: 'spaces', title: 'Rooms and hardware, measured', projects: ['aural-heritage', 'ir-modeling'] },
       ];
       put(main, pageHead(pg),

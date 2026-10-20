@@ -11,7 +11,7 @@ const P = D.person;
 // Used in the PDF only. Kept out of data.js because data.js is published with the site.
 const PHONE = '+1 662 694 9788';
 // Set this once the site is hosted; the PDF's "Listen" links will then point at it.
-const SITE_URL = '';
+const SITE_URL = 'https://kritanduwal.com';
 
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const byId = Object.fromEntries(D.projects.map(p => [p.id, p]));
